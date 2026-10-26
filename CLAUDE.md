@@ -39,3 +39,4 @@ DBeaver-like desktop DB explorer. **Pure Bun**: no Electron/Node. See README.md 
 - Anything that can run longer than a few seconds (dump, restore) must be a job (`startJob` in `server/jobs.ts`) polled via `jobs.status`; Bun.serve caps a single request at 255 s.
 - The compiled app is minified: never branch on `error.constructor.name` or function names; use `instanceof` with your own classes (see `ReadOnlyRollback` in `drivers/postgres.ts`, which fixed every `run_query` failing in the packaged app).
 - `objc_msgSend` has no fixed signature: declare it once per signature via separate `dlopen` calls (see `macos-menu.ts`).
+- Paths from `import.meta.url` go through `fileURLToPath` (`new URL(...).pathname` yields `/D:/...` on Windows and broke the Windows release build); scripts spawn bun as `process.execPath` instead of relying on PATH.

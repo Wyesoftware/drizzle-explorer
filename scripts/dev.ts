@@ -3,11 +3,12 @@
  * Pass --watch to restart the shell/backend when server files change.
  */
 import { spawn } from "bun";
+import { fileURLToPath } from "node:url";
 
 const VITE_PORT = 5173;
 const RPC_PORT = Number(process.env.DRIZZLE_EXPLORER_RPC_PORT ?? 4817);
 const watch = process.argv.includes("--watch");
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 const env = {
   ...process.env,

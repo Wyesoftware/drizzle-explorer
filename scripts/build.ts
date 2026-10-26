@@ -12,8 +12,9 @@
 import { readdir, mkdir, rm, writeFile, chmod, copyFile } from "node:fs/promises";
 import { join, relative, posix } from "node:path";
 import { spawn } from "bun";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const argv = process.argv.slice(2);
 const targetIndex = argv.indexOf("--target");
 const target = targetIndex >= 0 ? argv[targetIndex + 1] : undefined;
@@ -27,7 +28,8 @@ const generated = join(root, "src/main/assets.generated.ts");
 const binaryName = isWindows ? "drizzle-explorer.exe" : "drizzle-explorer";
 const version = ((await Bun.file(join(root, "package.json")).json()) as { version: string }).version;
 
-await run(["bunx", "vite", "build"]);
+// process.execPath: the running bun binary, so the scripts do not depend on PATH lookups (bun.exe/bunx.exe on Windows).
+await run([process.execPath, "x", "vite", "build"]);
 
 // Generate an import manifest so Bun embeds every built asset into the executable.
 const files = await walk(distUi);
@@ -47,7 +49,7 @@ await mkdir(binDir, { recursive: true });
 const outfile = join(binDir, binaryName);
 try {
 await run([
-  "bun",
+  process.execPath,
   "build",
   "--compile",
   "--minify",

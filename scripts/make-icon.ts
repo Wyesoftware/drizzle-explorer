@@ -9,8 +9,9 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { spawnSync, which } from "bun";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const svg = join(root, "assets/icon.svg");
 const png = join(root, "assets/icon-1024.png");
 const iconset = join(root, "assets/AppIcon.iconset");
