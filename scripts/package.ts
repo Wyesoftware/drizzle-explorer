@@ -34,8 +34,10 @@ if (platform === "darwin") {
 } else if (platform === "windows") {
   asset = `drizzle-explorer-${version}-windows-${arch}.zip`;
   await rm(join(outDir, asset), { force: true });
-  // Windows ships bsdtar: `-a` picks the format from the extension.
-  await run(["tar", "-a", "-cf", join(outDir, asset), "-C", join(root, "dist/bin"), "drizzle-explorer.exe"]);
+  // Windows ships bsdtar in System32 (`-a` picks the format from the extension). Call it by full path:
+  // on GitHub runners PATH finds Git's MSYS tar first, which reads `D:\...` as a remote host ("Cannot connect to D").
+  const tar = process.platform === "win32" ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe") : "tar";
+  await run([tar, "-a", "-cf", join(outDir, asset), "-C", join(root, "dist/bin"), "drizzle-explorer.exe"]);
 } else {
   console.error(`Unknown platform ${platform}`);
   process.exit(2);
