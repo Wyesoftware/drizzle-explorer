@@ -1,0 +1,118 @@
+# Builds, signs and uploads the desktop binaries when a GitHub release is published.
+#
+# Trigger: publish a release whose tag is `vX.Y.Z` (the version is written into package.json before the build,
+# so the app reports it and the in-app updater can compare it). You can also re-run it for an existing tag
+# via "Run workflow".
+#
+# Secrets (Settings → Secrets and variables → Actions), all optional — without them macOS builds are ad-hoc signed:
+#   MACOS_CERTIFICATE           base64 of the "Developer ID Application" certificate (.p12)
+#   MACOS_CERTIFICATE_PASSWORD  password of that .p12
+#   APPLE_ID                    Apple ID used for notarization
+#   APPLE_TEAM_ID               10-character team id
+#   APPLE_APP_PASSWORD          app-specific password for the Apple ID (appleid.apple.com → App-Specific Passwords)
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build for (e.g. v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  BUN_VERSION: "1.4.4"
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: bun-darwin-arm64
+            platform: darwin
+            arch: arm64
+          - os: macos-15
+            target: bun-darwin-x64
+            platform: darwin
+            arch: x64
+          - os: ubuntu-24.04
+            target: bun-linux-x64
+            platform: linux
+            arch: x64
+          - os: ubuntu-24.04-arm
+            target: bun-linux-arm64
+            platform: linux
+            arch: arm64
+          - os: windows-2025
+            target: bun-windows-x64
+            platform: windows
+            arch: x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        shell: bash
+        run: bun install --frozen-lockfile
+
+      - name: Set version from tag
+        shell: bash
+        run: bun run scripts/set-version.ts "$RELEASE_TAG"
+
+      - name: Typecheck and unit tests
+        shell: bash
+        run: |
+          bun run typecheck
+          bun test
+
+      - name: Prepare macOS signing
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: bash scripts/macos-sign.sh setup
+
+      - name: Build
+        shell: bash
+        run: bun run scripts/build.ts --target ${{ matrix.target }}
+
+      - name: Sign, notarize and staple (macOS)
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: bash scripts/macos-sign.sh sign "dist/Drizzle Explorer.app"
+
+      - name: Package
+        shell: bash
+        run: bun run scripts/package.ts --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+
+      - name: Upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" dist/release/* --clobber --repo "$GITHUB_REPOSITORY"
+
+      - name: Clean up signing keychain
+        if: always() && matrix.platform == 'darwin'
+        shell: bash
+        run: bash scripts/macos-sign.sh cleanup

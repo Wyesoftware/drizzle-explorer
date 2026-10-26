@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext"],
+    "types": ["bun-types"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noUncheckedIndexedAccess": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "@/*": ["./src/ui/*"],
+      "@shared/*": ["./src/shared/*"],
+      "webview-bun": ["./src/main/webview-bun.d.ts"]
+    }
+  },
+  "include": ["src/main", "src/server", "src/shared", "scripts", "env.d.ts"]
+}

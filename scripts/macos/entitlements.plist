@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Bun's JIT (JavaScriptCore) needs these under the hardened runtime; see bun.com/docs/bundler/executables -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-executable-page-protection</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <!-- webview-bun dlopens its (embedded) dylib and the app talks to the Objective-C runtime through bun:ffi -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <!-- Database connections and update downloads -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+</dict>
+</plist>
