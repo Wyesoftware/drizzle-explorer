@@ -10,6 +10,7 @@ import { NativeSelect } from "@/components/NativeSelect";
 import { errorMessage, rpc } from "@/lib/rpc";
 import {
   dateInputType,
+  matchesModel,
   normalizeDateValue,
   opLabel,
   opNeedsValue,
@@ -22,6 +23,8 @@ import {
 
 export interface ColumnFilterParams {
   spec: ColumnFilterSpec;
+  /** Evaluate the model in the grid (rows already in memory, e.g. SQL results) instead of on the server. */
+  clientSide?: boolean;
 }
 
 const SET_LIMIT = 200;
@@ -31,8 +34,8 @@ const SET_LIMIT = 200;
  * conditions by `TableTab` (`doesFilterPass` always passes), so it works for pages and infinite scroll alike.
  */
 export function ColumnFilter(props: CustomFilterProps<ResultRow, unknown, ColumnFilterModel> & ColumnFilterParams) {
-  useGridFilter({ doesFilterPass: () => true });
-  const { spec, model, onModelChange } = props;
+  const { spec, model, onModelChange, clientSide, getValue } = props;
+  useGridFilter({ doesFilterPass: clientSide ? ({ node }) => matchesModel(model, getValue(node)) : () => true });
   if (spec.type === "set") return <SetFilterBody source={spec.source} model={model} onModelChange={onModelChange} />;
   return <ConditionFilterBody spec={spec} model={model} onModelChange={onModelChange} />;
 }

@@ -144,6 +144,19 @@
   box-shadow: inset 0 0 0 1px var(--primary);
   background-color: color-mix(in oklch, var(--primary) 12%, transparent);
 }
+/* Running row number column (DataGrid ROW_NUMBER_COL) */
+.ag-cell.row-number-cell {
+  color: var(--muted-foreground);
+  background-color: color-mix(in oklch, var(--muted) 60%, transparent);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  cursor: default;
+}
+.ag-floating-filter[col-id="__row_number"] .ag-floating-filter-button,
+.ag-floating-filter[col-id="__row_number"] .ag-floating-filter-body {
+  display: none;
+}
 /* Floating filter row (features/grid/filters): the checkbox column has no filter, hide its stray menu button */
 .ag-floating-filter[col-id="ag-Grid-SelectionColumn"] .ag-floating-filter-button {
   display: none;

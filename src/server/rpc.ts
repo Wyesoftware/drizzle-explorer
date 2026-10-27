@@ -6,6 +6,7 @@ import { exportData, inspectImport, runImport, transferRows } from "./transfer";
 import { detectTools, startDump, startRestore } from "./dump";
 import { cancelJob, jobStatus, listJobs } from "./jobs";
 import { ai } from "./ai/sessions";
+import { queries } from "./queries";
 import { APP_VERSION, BUILD_TIME, checkUpdate, openExternal, installUpdate } from "./app";
 import { getUiState, setUiState } from "./prefs";
 
@@ -38,7 +39,11 @@ const handlers: Handlers = {
 
   "connections.list": () => connections.list(),
   "connections.save": ({ config }) => connections.save(config),
-  "connections.delete": async ({ id }) => ({ deleted: await connections.remove(id) }),
+  "connections.delete": async ({ id }) => {
+    const deleted = await connections.remove(id);
+    if (deleted) await queries.removeForConnection(id);
+    return { deleted };
+  },
   "connections.test": ({ config }) => connections.test(config),
   "connections.connect": ({ id }) => connections.connect(id),
   "connections.disconnect": ({ id }) => connections.disconnect(id),
@@ -89,12 +94,17 @@ const handlers: Handlers = {
   "jobs.status": ({ id, offset }) => jobStatus(id, offset),
   "jobs.cancel": ({ id }) => cancelJob(id),
 
+  "queries.list": ({ connectionId }) => queries.list(connectionId),
+  "queries.save": (input) => queries.save(input),
+  "queries.delete": async ({ id }) => ({ deleted: await queries.remove(id) }),
+  "queries.setThread": ({ threadId, connectionId, sql }) => queries.setThread(threadId, connectionId, sql),
+
   "ai.status": () => ai.status(),
   "ai.sessions": () => ai.list(),
   "ai.session": ({ id }) => ai.detail(id),
-  "ai.create": ({ model, effort }) => ai.create(model, effort),
+  "ai.create": ({ model, effort, connectionId }) => ai.create(model, effort, connectionId),
   "ai.delete": async ({ id }) => ({ deleted: await ai.remove(id) }),
-  "ai.configure": ({ id, model, effort }) => ai.configure(id, { model, effort }),
+  "ai.configure": ({ id, title, model, effort, connectionId }) => ai.configure(id, { title, model, effort, connectionId }),
   "ai.updateSettings": (patch) => ai.updateSettings(patch),
   "ai.send": ({ id, text, context }) => ai.send(id, text, context),
   "ai.cancel": async ({ id }) => ({ cancelled: await ai.cancel(id) }),

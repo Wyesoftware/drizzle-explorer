@@ -24,6 +24,7 @@ import type {
 import { CONFIG_DIR, connections } from "../connections";
 import { DriverError } from "../drivers";
 import { createDbToolServer } from "./tools";
+import { queries } from "../queries";
 
 const SESSIONS_FILE = join(CONFIG_DIR, "ai-sessions.json");
 const SETTINGS_FILE = join(CONFIG_DIR, "ai-settings.json");
@@ -189,11 +190,15 @@ interface Session {
   title: string;
   model: string | null;
   effort: AiEffort | null;
+  connectionId: string | null;
   createdAt: string;
   updatedAt: string;
   messages: AiMessage[];
   sdkSessionId?: string;
+  /** The title is still the raw first request; a summary gets generated when the first turn ends. */
+  autoTitle?: boolean;
   running: boolean;
+  titling?: boolean;
   abort?: AbortController;
   listeners: Set<Listener>;
 }
@@ -209,7 +214,8 @@ async function load(): Promise<void> {
     const file = Bun.file(SESSIONS_FILE);
     if (await file.exists()) {
       const data = (await file.json()) as { sessions?: Omit<Session, "running" | "abort" | "listeners">[] };
-      for (const s of data.sessions ?? []) sessions.set(s.id, { ...s, effort: s.effort ?? null, running: false, listeners: new Set() });
+      for (const s of data.sessions ?? [])
+        sessions.set(s.id, { ...s, effort: s.effort ?? null, connectionId: s.connectionId ?? null, running: false, listeners: new Set() });
     }
   } catch (error) {
     console.error("[ai] could not load sessions:", error);
@@ -222,12 +228,27 @@ function persist(): void {
   persistTimer = setTimeout(async () => {
     try {
       await mkdir(CONFIG_DIR, { recursive: true });
-      const list = [...sessions.values()].map(({ running: _r, abort: _a, listeners: _l, ...rest }) => rest);
+      const list = [...sessions.values()].map(({ running: _r, abort: _a, listeners: _l, titling: _t, ...rest }) => rest);
       await Bun.write(SESSIONS_FILE, JSON.stringify({ version: 1, sessions: list }, null, 2));
     } catch (error) {
       console.error("[ai] could not save sessions:", error);
     }
   }, 300);
+}
+
+/** The chat's description: the user's first request, squashed to one short line. */
+function preview(s: Session): string | null {
+  for (const m of s.messages) {
+    if (m.role !== "user") continue;
+    const text = m.parts
+      .filter((p): p is Extract<AiMessagePart, { type: "text" }> => p.type === "text")
+      .map((p) => p.text)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) return text.length > 140 ? `${text.slice(0, 137)}…` : text;
+  }
+  return null;
 }
 
 function info(s: Session): AiSessionInfo {
@@ -240,6 +261,8 @@ function info(s: Session): AiSessionInfo {
     updatedAt: s.updatedAt,
     running: s.running,
     messageCount: s.messages.length,
+    connectionId: s.connectionId ?? null,
+    preview: preview(s),
   };
 }
 
@@ -319,10 +342,10 @@ export const ai = {
 
   async detail(id: string): Promise<AiSessionDetail> {
     const s = await get(id);
-    return { ...info(s), messages: s.messages };
+    return { ...info(s), messages: s.messages, query: await queries.thread(id) };
   },
 
-  async create(model: string | null | undefined, effort?: AiEffort | null): Promise<AiSessionInfo> {
+  async create(model: string | null | undefined, effort?: AiEffort | null, connectionId?: string | null): Promise<AiSessionInfo> {
     await load();
     const now = new Date().toISOString();
     const s: Session = {
@@ -330,6 +353,7 @@ export const ai = {
       title: "New chat",
       model: model || null,
       effort: effort ?? null,
+      connectionId: connectionId || null,
       createdAt: now,
       updatedAt: now,
       messages: [],
@@ -348,13 +372,22 @@ export const ai = {
     s.abort?.abort();
     sessions.delete(id);
     persist();
+    await queries.removeThread(id);
     return true;
   },
 
-  async configure(id: string, patch: { model?: string | null; effort?: AiEffort | null }): Promise<AiSessionInfo> {
+  async configure(
+    id: string,
+    patch: { title?: string; model?: string | null; effort?: AiEffort | null; connectionId?: string | null },
+  ): Promise<AiSessionInfo> {
     const s = await get(id);
+    if (patch.title !== undefined && patch.title.trim()) {
+      s.title = patch.title.trim().slice(0, 120);
+      s.autoTitle = false;
+    }
     if (patch.model !== undefined) s.model = patch.model || null;
     if (patch.effort !== undefined) s.effort = patch.effort || null;
+    if (patch.connectionId !== undefined) s.connectionId = patch.connectionId || null;
     persist();
     return info(s);
   },
@@ -380,7 +413,11 @@ export const ai = {
 
     const now = new Date().toISOString();
     s.messages.push({ id: crypto.randomUUID(), role: "user", parts: [{ type: "text", text: trimmed }], createdAt: now });
-    if (s.messages.length === 1) s.title = trimmed.length > 60 ? `${trimmed.slice(0, 57)}…` : trimmed;
+    if (s.messages.length === 1 && s.title === "New chat") {
+      s.title = trimmed.length > 60 ? `${trimmed.slice(0, 57)}…` : trimmed;
+      s.autoTitle = true;
+    }
+    if (context?.connectionId) s.connectionId = context.connectionId;
     const assistant: AiMessage = { id: crypto.randomUUID(), role: "assistant", parts: [], createdAt: now };
     s.messages.push(assistant);
     s.running = true;
@@ -415,7 +452,11 @@ async function runTurn(s: Session, assistant: AiMessage, prompt: string): Promis
   const abort = new AbortController();
   s.abort = abort;
   await loadSettings();
-  const server = createDbToolServer((action: AiUiAction) => emit(s, { type: "ui_action", action }));
+  const server = createDbToolServer((action: AiUiAction) => {
+    // The chat's playground SQL survives restarts: the last query the assistant wrote wins.
+    void queries.setThread(s.id, action.connectionId, action.sql);
+    emit(s, { type: "ui_action", action });
+  });
   const model = s.model ?? settings.defaultModel ?? undefined;
   const effort = s.effort ?? settings.defaultEffort ?? undefined;
   const options: Options = {
@@ -517,7 +558,84 @@ async function runTurn(s: Session, assistant: AiMessage, prompt: string): Promis
     s.abort = undefined;
     s.updatedAt = new Date().toISOString();
     persist();
+    if (s.autoTitle && !s.titling) void generateTitle(s);
   }
+}
+
+const TITLE_MODEL = "haiku";
+const TITLE_PROMPT = `You name chats in a database client. Reply with ONLY the title: 2–6 words, in the language of the user's request, no quotes, no trailing period, no markdown. Name the subject of the user's request (what data or question it is about), like a short document heading. The answer excerpt is only context for the subject: never mention the assistant, the app, the playground, the editor or where results were shown.`;
+
+/**
+ * Replaces the provisional title (the raw request) with a short summary produced by a cheap one-shot
+ * CLI run (no tools, no resume). Failures keep the provisional title; a user rename always wins.
+ */
+async function generateTitle(s: Session): Promise<void> {
+  const request = s.messages.find((m) => m.role === "user");
+  if (!request) return;
+  const textOf = (m: AiMessage) =>
+    m.parts
+      .filter((p): p is Extract<AiMessagePart, { type: "text" }> => p.type === "text")
+      .map((p) => p.text)
+      .join("\n")
+      .trim();
+  const reply = s.messages.find((m) => m.role === "assistant" && textOf(m));
+  const prompt = [
+    `User request:\n${textOf(request).slice(0, 2000)}`,
+    reply ? `\nAssistant answer (excerpt):\n${textOf(reply).slice(0, 1500)}` : "",
+    "\nTitle:",
+  ].join("\n");
+  s.titling = true;
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), 45_000);
+  try {
+    let result = "";
+    for await (const m of query({
+      prompt,
+      options: {
+        model: TITLE_MODEL,
+        tools: [],
+        allowedTools: [],
+        systemPrompt: TITLE_PROMPT,
+        settingSources: [],
+        permissionMode: "default",
+        maxTurns: 1,
+        env: sdkEnv(),
+        abortController: abort,
+        cwd: CONFIG_DIR,
+        pathToClaudeCodeExecutable: resolveClaudeExecutable(),
+      },
+    }) as AsyncIterable<SDKMessage>) {
+      if (m.type === "result" && m.subtype === "success") result = m.result;
+    }
+    const title = cleanTitle(result);
+    // The user may have renamed the chat meanwhile.
+    if (!title || !s.autoTitle) return;
+    s.title = title;
+    s.autoTitle = false;
+    persist();
+    emit(s, { type: "session_updated" });
+  } catch (error) {
+    console.error("[ai] could not generate a chat title:", error);
+  } finally {
+    clearTimeout(timer);
+    s.titling = false;
+  }
+}
+
+/** First non-empty line, without wrapping quotes, markdown or a trailing period; empty when unusable. */
+export function cleanTitle(raw: string): string {
+  const line = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .find(Boolean);
+  if (!line) return "";
+  const title = line
+    .replace(/^(title|назва)\s*:\s*/i, "")
+    .replace(/^[#*_`"'«»“”‘’\s]+|[*_`"'«»“”‘’\s.]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!title || title.length > 80) return "";
+  return title;
 }
 
 /** Keeps the default entry plus the newest version of each model family (opus, fable, sonnet, haiku…). */

@@ -2,6 +2,7 @@ import { useState, type ComponentType, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   ArchiveRestoreIcon,
+  BookmarkIcon,
   CopyIcon,
   DatabaseBackupIcon,
   DatabaseIcon,
@@ -23,7 +24,7 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ConnectionConfig, ConnectionStatus, RoutineInfo, SchemaInfo, TableInfo } from "@shared/types";
+import type { ConnectionConfig, ConnectionStatus, RoutineInfo, SavedQuery, SchemaInfo, TableInfo } from "@shared/types";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -43,7 +44,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { keys, useConnect, useDeleteConnection, useDisconnect, useRoutines, useSchemas, useTables } from "@/lib/queries";
+import { keys, useConnect, useDeleteConnection, useDeleteQuery, useDisconnect, useRoutines, useSavedQueries, useSchemas, useTables } from "@/lib/queries";
 import { errorMessage } from "@/lib/rpc";
 import { routineTabId, tableTabId, useAppStore } from "@/lib/store";
 import { openDialog } from "@/lib/dialogs";
@@ -204,6 +205,7 @@ export function ConnectionNode({
       {expanded && schemas.error && (
         <div className="px-6 py-1 text-xs text-destructive">{errorMessage(schemas.error)}</div>
       )}
+      {expanded && <SavedQueriesGroup config={config} />}
       {expanded &&
         schemas.data?.map((schema) => <SchemaNode key={schema.name} config={config} schema={schema} />)}
 
@@ -221,6 +223,73 @@ export function ConnectionNode({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </>
+  );
+}
+
+/** The connection's entries of the SQL library (named queries only; chat playgrounds are not listed). */
+function SavedQueriesGroup({ config }: { config: ConnectionConfig }) {
+  const connectionId = config.id;
+  const saved = useSavedQueries(connectionId);
+  const [expanded, setExpanded] = useState(true);
+  const openSavedQuery = useAppStore((s) => s.openSavedQuery);
+  const activeTabId = useAppStore((s) => s.activeTabId);
+  const remove = useDeleteQuery();
+  const list = saved.data ?? [];
+
+  const entriesFor = (q: SavedQuery): MenuEntry[] => [
+    { label: "Open", icon: <TerminalIcon />, onClick: () => openSavedQuery(q) },
+    {
+      label: "Rename…",
+      icon: <PencilIcon />,
+      onClick: () => openDialog({ kind: "saveQuery", id: q.id, connectionId: q.connectionId, sql: q.sql, defaultName: q.name }),
+    },
+    { separator: true },
+    {
+      label: "Delete",
+      icon: <Trash2Icon />,
+      destructive: true,
+      onClick: () =>
+        openDialog({
+          kind: "confirm",
+          title: `Delete saved query "${q.name}"?`,
+          confirmLabel: "Delete",
+          destructive: true,
+          onConfirm: async () => {
+            await remove.mutateAsync(q.id);
+          },
+        }),
+    },
+  ];
+
+  return (
+    <>
+      <TreeRow
+        depth={1}
+        expandable
+        expanded={expanded}
+        loading={saved.isLoading}
+        icon={<BookmarkIcon />}
+        label={<span className="text-muted-foreground">Saved queries</span>}
+        hint={saved.data ? formatCount(list.length) : undefined}
+        onToggle={() => setExpanded((v) => !v)}
+      />
+      {expanded && saved.data && list.length === 0 && (
+        <div className="py-1 pl-12 text-xs text-muted-foreground italic">none yet — use Save in a SQL editor</div>
+      )}
+      {expanded &&
+        list.map((q) => (
+          <WithContextMenu key={q.id} entries={entriesFor(q)}>
+            <TreeRow
+              depth={2}
+              icon={<BookmarkIcon className="text-primary" />}
+              label={q.name}
+              title={q.sql}
+              selected={activeTabId === `saved:${q.id}`}
+              onClick={() => openSavedQuery(q)}
+            />
+          </WithContextMenu>
+        ))}
     </>
   );
 }

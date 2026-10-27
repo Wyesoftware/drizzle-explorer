@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { RoutineInfo, RowFilter, SortSpec } from "@shared/types";
+import type { RoutineInfo, RowFilter, SavedQuery, SortSpec } from "@shared/types";
 
 export interface TableTab {
   id: string;
@@ -21,12 +21,15 @@ export interface SqlTab {
   sql: string;
   /** Bumped to make the editor execute its current SQL (assistant playground). */
   runVersion?: number;
+  /** Set when the tab edits an entry of the SQL library: Save updates it in place. */
+  savedId?: string;
 }
 
-/** The assistant's own tab: a SQL editor it fills through tool calls. */
-export interface PlaygroundTab {
-  id: string;
-  kind: "playground";
+/**
+ * The assistant's playground (assistant mode, right pane): a SQL editor the chat fills through tool calls.
+ * One per chat session, kept outside the explore-mode tab list.
+ */
+export interface Playground {
   sessionId: string;
   title: string;
   connectionId: string | null;
@@ -42,18 +45,9 @@ export interface RoutineTab {
 
 export type SettingsSection = "general" | "table" | "assistant" | "updates";
 
-/** Full-page settings (single instance, id "settings"). */
-export interface SettingsTab {
-  id: "settings";
-  kind: "settings";
-  section: SettingsSection;
-}
+export type Tab = TableTab | SqlTab | RoutineTab;
 
-export type Tab = TableTab | SqlTab | RoutineTab | PlaygroundTab | SettingsTab;
-
-export const SETTINGS_TAB_ID = "settings";
-
-export const playgroundTabId = (sessionId: string) => `playground:${sessionId}`;
+const playgroundSqlId = (sessionId: string) => `playground:${sessionId}:sql`;
 
 export const tableTabId = (connectionId: string, schema: string | null, table: string) =>
   `table:${connectionId}:${schema ?? ""}:${table}`;
@@ -64,6 +58,10 @@ interface AppState {
   tabs: Tab[];
   activeTabId: string | null;
   sqlCounter: number;
+  /** Section shown by the full-page settings overlay; null = closed. Tabs underneath stay mounted. */
+  settings: SettingsSection | null;
+  /** Assistant playgrounds by chat session id. */
+  playgrounds: Record<string, Playground>;
   openTable: (
     connectionId: string,
     schema: string | null,
@@ -71,13 +69,19 @@ interface AppState {
     options?: { filter?: RowFilter; sort?: SortSpec[] },
   ) => void;
   openSqlEditor: (connectionId: string | null, sql?: string) => void;
+  /** Opens (or focuses) the tab of a saved query. */
+  openSavedQuery: (query: SavedQuery) => void;
   openRoutine: (connectionId: string, routine: RoutineInfo) => void;
-  /** Creates (or focuses) the playground tab for a chat session. */
-  ensurePlayground: (sessionId: string, title: string, options?: { activate?: boolean }) => void;
+  /** Creates the playground for a chat session if it does not exist yet. */
+  ensurePlayground: (sessionId: string, title: string) => void;
+  updatePlayground: (sessionId: string, patch: Partial<Pick<Playground, "title" | "connectionId">>) => void;
+  removePlayground: (sessionId: string) => void;
   playgroundQuery: (sessionId: string, title: string, connectionId: string, sql: string, run: boolean) => void;
+  /** Patches a tab; also reaches the playgrounds' nested SQL editors by their own id. */
   updateTab: (id: string, patch: Partial<Tab>) => void;
-  /** Opens (or focuses) the settings page, optionally jumping to a section. */
+  /** Opens the settings page over the workspace, optionally jumping to a section. */
   openSettings: (section?: SettingsSection) => void;
+  closeSettings: () => void;
   closeTab: (id: string) => void;
   closeConnectionTabs: (connectionId: string) => void;
   setActiveTab: (id: string) => void;
@@ -87,6 +91,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   tabs: [],
   activeTabId: null,
   sqlCounter: 0,
+  settings: null,
+  playgrounds: {},
 
   openTable(connectionId, schema, table, options) {
     const id = tableTabId(connectionId, schema, table);
@@ -125,6 +131,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
+  openSavedQuery(query) {
+    const id = `saved:${query.id}`;
+    const existing = get().tabs.find((t) => t.id === id);
+    if (existing) {
+      set({ activeTabId: id });
+      return;
+    }
+    set((s) => ({
+      tabs: [...s.tabs, { id, kind: "sql", connectionId: query.connectionId, title: query.name, sql: query.sql, savedId: query.id }],
+      activeTabId: id,
+    }));
+  },
+
   openRoutine(connectionId, routine) {
     const id = routineTabId(connectionId, routine);
     const existing = get().tabs.find((t) => t.id === id);
@@ -136,61 +155,61 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   openSettings(section) {
-    const existing = get().tabs.find((t) => t.id === SETTINGS_TAB_ID) as SettingsTab | undefined;
-    if (existing) {
-      set((s) => ({
-        activeTabId: SETTINGS_TAB_ID,
-        tabs: section ? s.tabs.map((t) => (t.id === SETTINGS_TAB_ID ? { ...t, section } : t)) : s.tabs,
-      }));
-      return;
-    }
-    const tab: SettingsTab = { id: SETTINGS_TAB_ID, kind: "settings", section: section ?? "general" };
-    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: SETTINGS_TAB_ID }));
+    set((s) => ({ settings: section ?? s.settings ?? "general" }));
+  },
+  closeSettings() {
+    set({ settings: null });
   },
   updateTab(id, patch) {
-    set((s) => ({
-      tabs: s.tabs.map((t) => {
-        if (t.id === id) return { ...t, ...patch } as Tab;
-        // The playground's SQL editor is a nested tab addressed by its own id.
-        if (t.kind === "playground" && t.sql.id === id) return { ...t, sql: { ...t.sql, ...patch } as SqlTab };
-        return t;
-      }),
-    }));
+    set((s) => {
+      if (s.tabs.some((t) => t.id === id)) return { tabs: s.tabs.map((t) => (t.id === id ? ({ ...t, ...patch } as Tab) : t)) };
+      const owner = Object.values(s.playgrounds).find((p) => p.sql.id === id);
+      if (!owner) return {};
+      const sql = { ...owner.sql, ...patch } as SqlTab;
+      return { playgrounds: { ...s.playgrounds, [owner.sessionId]: { ...owner, sql, connectionId: sql.connectionId } } };
+    });
   },
 
-  ensurePlayground(sessionId, title, options) {
-    const id = playgroundTabId(sessionId);
-    const existing = get().tabs.find((t) => t.id === id);
-    if (existing) {
-      if (options?.activate) set({ activeTabId: id });
-      return;
-    }
-    const tab: PlaygroundTab = {
-      id,
-      kind: "playground",
+  ensurePlayground(sessionId, title) {
+    if (get().playgrounds[sessionId]) return;
+    const playground: Playground = {
       sessionId,
       title,
       connectionId: null,
-      sql: { id: `${id}:sql`, kind: "sql", connectionId: null, title: "Playground", sql: "", runVersion: 0 },
+      sql: { id: playgroundSqlId(sessionId), kind: "sql", connectionId: null, title: "Playground", sql: "", runVersion: 0 },
     };
-    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: options?.activate ? id : s.activeTabId }));
+    set((s) => ({ playgrounds: { ...s.playgrounds, [sessionId]: playground } }));
+  },
+
+  updatePlayground(sessionId, patch) {
+    set((s) => {
+      const p = s.playgrounds[sessionId];
+      return p ? { playgrounds: { ...s.playgrounds, [sessionId]: { ...p, ...patch } } } : {};
+    });
+  },
+
+  removePlayground(sessionId) {
+    set((s) => {
+      const { [sessionId]: _gone, ...rest } = s.playgrounds;
+      return { playgrounds: rest };
+    });
   },
 
   playgroundQuery(sessionId, title, connectionId, sql, run) {
     get().ensurePlayground(sessionId, title);
-    const id = playgroundTabId(sessionId);
-    set((s) => ({
-      activeTabId: id,
-      tabs: s.tabs.map((t) =>
-        t.id === id && t.kind === "playground"
-          ? {
-              ...t,
-              connectionId,
-              sql: { ...t.sql, connectionId, sql, runVersion: run ? (t.sql.runVersion ?? 0) + 1 : t.sql.runVersion },
-            }
-          : t,
-      ),
-    }));
+    set((s) => {
+      const p = s.playgrounds[sessionId]!;
+      return {
+        playgrounds: {
+          ...s.playgrounds,
+          [sessionId]: {
+            ...p,
+            connectionId,
+            sql: { ...p.sql, connectionId, sql, runVersion: run ? (p.sql.runVersion ?? 0) + 1 : p.sql.runVersion },
+          },
+        },
+      };
+    });
   },
 
   closeTab(id) {

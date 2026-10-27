@@ -379,6 +379,10 @@ export interface AiSessionInfo {
   updatedAt: string;
   running: boolean;
   messageCount: number;
+  /** Connection the chat works on (mirrored by its playground). */
+  connectionId: string | null;
+  /** Short preview for the thread list: the latest assistant reply (or user message). */
+  preview: string | null;
 }
 
 export type AiAuthMode = "subscription" | "apiKey";
@@ -423,6 +427,19 @@ export interface AiModelOption {
 
 export interface AiSessionDetail extends AiSessionInfo {
   messages: AiMessage[];
+  /** Latest SQL of the chat's playground, restored on reopen (see server/queries.ts). */
+  query: SavedQuery | null;
+}
+
+/** A query in the SQL library: named per connection, or (`threadId` set, no name) a chat's playground SQL. */
+export interface SavedQuery {
+  id: string;
+  connectionId: string | null;
+  threadId: string | null;
+  name: string;
+  sql: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** What the UI is looking at when the user sends a message. */
@@ -448,6 +465,7 @@ export type AiEvent =
   | { type: "ui_action"; action: AiUiAction }
   | { type: "turn_done"; messageId: string; stats: AiMessage["stats"] }
   | { type: "turn_error"; messageId: string; message: string }
+  | { type: "session_updated" }
   | { type: "status"; text: string };
 
 export interface AiStatus {
@@ -615,6 +633,10 @@ export interface RpcMethods {
   }) => DistinctValuesResult;
 
   "sql.execute": (params: { connectionId: string; sql: string }) => QueryResult;
+  "queries.list": (params: { connectionId?: string | null }) => SavedQuery[];
+  "queries.save": (params: { id?: string | null; connectionId: string | null; name: string; sql: string }) => SavedQuery;
+  "queries.delete": (params: { id: string }) => { deleted: boolean };
+  "queries.setThread": (params: { threadId: string; connectionId: string | null; sql: string }) => SavedQuery;
 
   "data.export": (params: ExportRequest) => ExportResult;
   "data.transfer": (params: TransferRequest) => TransferResult;
@@ -631,9 +653,9 @@ export interface RpcMethods {
   "ai.status": (params: Record<string, never>) => AiStatus;
   "ai.sessions": (params: Record<string, never>) => AiSessionInfo[];
   "ai.session": (params: { id: string }) => AiSessionDetail;
-  "ai.create": (params: { model?: string | null; effort?: AiEffort | null }) => AiSessionInfo;
+  "ai.create": (params: { model?: string | null; effort?: AiEffort | null; connectionId?: string | null }) => AiSessionInfo;
   "ai.delete": (params: { id: string }) => { deleted: boolean };
-  "ai.configure": (params: { id: string; model?: string | null; effort?: AiEffort | null }) => AiSessionInfo;
+  "ai.configure": (params: { id: string; title?: string; model?: string | null; effort?: AiEffort | null; connectionId?: string | null }) => AiSessionInfo;
   "ai.updateSettings": (params: Partial<AiSettings>) => AiSettings;
   "ai.send": (params: { id: string; text: string; context?: AiContext }) => { messageId: string };
   "ai.cancel": (params: { id: string }) => { cancelled: boolean };

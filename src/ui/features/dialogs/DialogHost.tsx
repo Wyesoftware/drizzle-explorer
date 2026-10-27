@@ -8,6 +8,7 @@ import { DumpDialog } from "@/features/dump/DumpDialog";
 import { RestoreDialog } from "@/features/dump/RestoreDialog";
 import { JobDialog } from "@/features/jobs/JobDialog";
 import { FormatDialog } from "@/features/grid/FormatDialog";
+import { SaveQueryDialog } from "@/features/sql/SaveQueryDialog";
 
 /** Renders whichever app-level dialog is currently requested (see lib/dialogs.ts). */
 export function DialogHost() {
@@ -67,6 +68,19 @@ export function DialogHost() {
       return <RestoreDialog key={key} open onOpenChange={onOpenChange} connectionId={current.connectionId} dialect={current.dialect} />;
     case "job":
       return <JobDialog key={key} open onOpenChange={onOpenChange} jobId={current.jobId} />;
+    case "saveQuery":
+      return (
+        <SaveQueryDialog
+          key={key}
+          open
+          onOpenChange={onOpenChange}
+          id={current.id}
+          connectionId={current.connectionId}
+          sql={current.sql}
+          defaultName={current.defaultName}
+          onSaved={current.onSaved}
+        />
+      );
     case "format":
       return (
         <FormatDialog

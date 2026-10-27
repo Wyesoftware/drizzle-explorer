@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { DatabaseIcon, PlusIcon, TerminalIcon } from "lucide-react";
+import { DatabaseIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, TerminalIcon } from "lucide-react";
 import type { ConnectionConfig } from "@shared/types";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -8,6 +8,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/EmptyState";
 import { useConnections, useConnectionStatus } from "@/lib/queries";
 import { useAppStore } from "@/lib/store";
+import { useLayout } from "@/lib/layout";
+import { modKey } from "@/lib/format";
 import { ConnectionDialog } from "@/features/connections/ConnectionDialog";
 import { ConnectionNode } from "./ConnectionNode";
 
@@ -17,6 +19,7 @@ export function Sidebar() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ConnectionConfig | null>(null);
   const openSqlEditor = useAppStore((s) => s.openSqlEditor);
+  const collapse = useLayout((s) => s.setSidebarCollapsed);
 
   const openNew = () => {
     setEditing(null);
@@ -46,6 +49,12 @@ export function Sidebar() {
             <PlusIcon />
           </TooltipTrigger>
           <TooltipContent>New connection</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Hide sidebar" />} onClick={() => collapse(true)}>
+            <PanelLeftCloseIcon />
+          </TooltipTrigger>
+          <TooltipContent>Hide sidebar ({modKey}+B)</TooltipContent>
         </Tooltip>
       </header>
 
@@ -82,6 +91,32 @@ export function Sidebar() {
       </ScrollArea>
 
       <ConnectionDialog open={dialogOpen} onOpenChange={setDialogOpen} initial={editing} />
+    </aside>
+  );
+}
+
+/** Replacement for the collapsed sidebar: a narrow strip with the expand button and the quick actions. */
+export function SidebarRail() {
+  const expand = useLayout((s) => s.setSidebarCollapsed);
+  const openSqlEditor = useAppStore((s) => s.openSqlEditor);
+  const connections = useConnections();
+  return (
+    <aside className="flex h-full w-10 shrink-0 flex-col items-center gap-1 border-r bg-sidebar py-1.5 text-sidebar-foreground">
+      <Tooltip>
+        <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Show sidebar" />} onClick={() => expand(false)}>
+          <PanelLeftOpenIcon />
+        </TooltipTrigger>
+        <TooltipContent side="right">Show connections ({modKey}+B)</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={<Button variant="ghost" size="icon-sm" aria-label="New SQL editor" />}
+          onClick={() => openSqlEditor(connections.data?.[0]?.id ?? null)}
+        >
+          <TerminalIcon />
+        </TooltipTrigger>
+        <TooltipContent side="right">New SQL editor</TooltipContent>
+      </Tooltip>
     </aside>
   );
 }

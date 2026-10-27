@@ -12,6 +12,7 @@ export const keys = {
   routines: (connectionId: string, schema: string | null) => ["routines", connectionId, schema] as const,
   rows: (request: TableRowsRequest) => ["rows", request] as const,
   systemInfo: ["system", "info"] as const,
+  savedQueries: (connectionId: string | null) => ["queries", connectionId] as const,
 };
 
 export function useConnections() {
@@ -73,6 +74,31 @@ export function useTableRows(request: TableRowsRequest, enabled = true) {
 
 export function useSystemInfo() {
   return useQuery({ queryKey: keys.systemInfo, queryFn: () => rpc("system.info", {}), staleTime: Infinity });
+}
+
+/** Named queries of one connection from the SQL library (chat playground entries are never listed). */
+export function useSavedQueries(connectionId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: keys.savedQueries(connectionId),
+    queryFn: () => rpc("queries.list", { connectionId }),
+    enabled,
+  });
+}
+
+export function useSaveQuery() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id?: string | null; connectionId: string | null; name: string; sql: string }) => rpc("queries.save", input),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ["queries"] }),
+  });
+}
+
+export function useDeleteQuery() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => rpc("queries.delete", { id }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ["queries"] }),
+  });
 }
 
 export function useSaveConnection() {

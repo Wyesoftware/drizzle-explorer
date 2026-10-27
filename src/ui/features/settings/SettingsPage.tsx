@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import {
   ArrowUpCircleIcon,
   DownloadIcon,
@@ -11,6 +11,7 @@ import {
   SparklesIcon,
   SunIcon,
   TableIcon,
+  XIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -20,7 +21,7 @@ import { useTheme, type Theme } from "@/lib/theme";
 import { useSettings, useUpdateStore, type TableMode } from "@/lib/settings";
 import { useSystemInfo } from "@/lib/queries";
 import { rpc } from "@/lib/rpc";
-import { useAppStore, type SettingsSection, type SettingsTab } from "@/lib/store";
+import { useAppStore, type SettingsSection } from "@/lib/store";
 import { checkForUpdates, installUpdate } from "@/lib/updates";
 import { cn } from "@/lib/utils";
 import { AssistantSettings } from "./AssistantSettings";
@@ -34,15 +35,35 @@ const SECTIONS: { id: SettingsSection; label: string; description: string; icon:
   { id: "updates", label: "Updates & about", description: "Version information and application updates.", icon: <ArrowUpCircleIcon /> },
 ];
 
-/** Full-page settings: a section menu on the left, one section at a time on the right. */
-export function SettingsPage({ tab }: { tab: SettingsTab }) {
+/**
+ * Full-page settings shown over the workspace (App.tsx): a section menu on the left, one section at a time on
+ * the right, closed with the ✕ button or Escape.
+ */
+export function SettingsPage({ section: sectionId }: { section: SettingsSection }) {
   const openSettings = useAppStore((s) => s.openSettings);
-  const section = SECTIONS.find((s) => s.id === tab.section) ?? SECTIONS[0]!;
+  const closeSettings = useAppStore((s) => s.closeSettings);
+  const section = SECTIONS.find((s) => s.id === sectionId) ?? SECTIONS[0]!;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Let open menus / dialogs handle their own Escape first.
+      if (document.querySelector("[role=dialog], [role=menu], [data-open]")) return;
+      closeSettings();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [closeSettings]);
 
   return (
     <div className="flex h-full min-h-0">
       <nav className="flex w-52 shrink-0 flex-col gap-0.5 border-r bg-muted/30 p-2" aria-label="Settings sections">
-        <div className="px-2 py-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Settings</div>
+        <div className="flex items-center px-2 py-1.5 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+          Settings
+          <Button variant="ghost" size="icon-xs" className="ml-auto" aria-label="Close settings" title="Close (Esc)" onClick={closeSettings}>
+            <XIcon />
+          </Button>
+        </div>
         {SECTIONS.map((s) => (
           <button
             key={s.id}

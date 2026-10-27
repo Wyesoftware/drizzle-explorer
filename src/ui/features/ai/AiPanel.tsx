@@ -4,20 +4,15 @@ import { toast } from "sonner";
 import {
   ArrowUpIcon,
   BotIcon,
+  DatabaseIcon,
   BrainIcon,
   ChevronDownIcon,
   CpuIcon,
-  LayoutPanelTopIcon,
-  PlusIcon,
-  SettingsIcon,
   SparklesIcon,
   SquareIcon,
-  Trash2Icon,
-  XIcon,
 } from "lucide-react";
 import type { AiContext, AiEffort, AiEvent } from "@shared/types";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,15 +23,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NativeSelect } from "@/components/NativeSelect";
 import { EmptyState } from "@/components/EmptyState";
 import { errorMessage, rpc } from "@/lib/rpc";
 import { useAiStore } from "@/lib/ai-store";
-import { playgroundTabId, useAppStore } from "@/lib/store";
+import { useAppStore } from "@/lib/store";
 import { modKey } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { formatSql } from "@/lib/sql-format";
 import { ChatMessage } from "./ChatMessage";
+import { configureSession, loadSession, markThreadQuery } from "./session-actions";
 import { RateLimitBadge } from "./RateLimits";
 
 const EFFORT_LABELS: Record<AiEffort, string> = {
@@ -47,7 +43,7 @@ const EFFORT_LABELS: Record<AiEffort, string> = {
   max: "Max · deepest reasoning",
 };
 
-/** Right-hand chat panel. Talks to the backend over RPC + an SSE stream per session. */
+/** Chat pane of assistant mode. Talks to the backend over RPC + an SSE stream per session. */
 export function AiPanel() {
   const store = useAiStore();
   const queryClient = useQueryClient();
@@ -56,52 +52,56 @@ export function AiPanel() {
   const connectionsList = useQuery({ queryKey: ["connections"], queryFn: () => rpc("connections.list", {}) });
   const [input, setInput] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
-  const tabs = useAppStore((s) => s.tabs);
-  const activeTabId = useAppStore((s) => s.activeTabId);
   const ensurePlayground = useAppStore((s) => s.ensurePlayground);
+  const updatePlayground = useAppStore((s) => s.updatePlayground);
   const playgroundQuery = useAppStore((s) => s.playgroundQuery);
   const updateTab = useAppStore((s) => s.updateTab);
-  const openSettings = useAppStore((s) => s.openSettings);
+  const playground = useAppStore((s) => (store.activeId ? (s.playgrounds[store.activeId] ?? null) : null));
+  // Connection chosen before the first message of a brand-new chat (no playground exists yet).
+  const [draftConnectionId, setDraftConnectionId] = useState<string | null>(null);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId);
+  // The chat always works on the playground next to it: its connection and whatever SQL is in the editor.
+  const connectionId = playground ? playground.connectionId : draftConnectionId;
   const context = useMemo<AiContext | undefined>(() => {
-    if (!activeTab) return undefined;
-    if (activeTab.kind === "table") return { connectionId: activeTab.connectionId, schema: activeTab.schema, table: activeTab.table };
-    if (activeTab.kind === "sql") return { connectionId: activeTab.connectionId, sql: activeTab.sql };
-    if (activeTab.kind === "playground") return { connectionId: activeTab.connectionId, sql: activeTab.sql.sql || undefined };
-    if (activeTab.kind === "routine") return { connectionId: activeTab.connectionId };
-    return undefined;
-  }, [activeTab]);
+    if (!connectionId) return undefined;
+    return { connectionId, sql: playground?.sql.sql.trim() || undefined };
+  }, [connectionId, playground?.sql.sql]);
+
+  // Selecting a connection in the chat stores it on the session and the playground editor, so all three agree.
+  const selectConnection = (id: string | null) => {
+    if (store.activeId) void configureSession(store.activeId, { connectionId: id });
+    else setDraftConnectionId(id);
+  };
+  // Connection changed on the playground side (its own selector, or a query the assistant ran) → persist.
+  const active = store.sessions.find((s) => s.id === store.activeId);
+  useEffect(() => {
+    if (!playground || !active || playground.connectionId === active.connectionId) return;
+    void rpc("ai.configure", { id: active.id, connectionId: playground.connectionId }).then(() =>
+      queryClient.invalidateQueries({ queryKey: ["ai", "sessions"] }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playground?.connectionId]);
 
   useEffect(() => {
     if (!sessions.data) return;
     store.setSessions(sessions.data);
-    const all = useAppStore.getState().tabs;
+    const all = useAppStore.getState().playgrounds;
     for (const s of sessions.data) {
-      const tab = all.find((t) => t.id === playgroundTabId(s.id));
-      if (tab && tab.kind === "playground" && tab.title !== s.title) updateTab(tab.id, { title: s.title });
+      const p = all[s.id];
+      if (p && p.title !== s.title) updatePlayground(s.id, { title: s.title });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions.data]);
 
-  const loadSession = useCallback(
-    async (id: string) => {
-      try {
-        const detail = await rpc("ai.session", { id });
-        store.setActive(id, detail.messages);
-        store.setRunning(detail.running);
-        ensurePlayground(id, detail.title);
-      } catch (e) {
-        toast.error("Could not load chat", { description: errorMessage(e) });
-      }
-    },
-    [store, ensurePlayground],
-  );
-
+  // On mount: re-read the active chat (events while the pane was unmounted are gone) or open the latest one.
+  const loadedOnMount = useRef(false);
   useEffect(() => {
-    if (store.open && !store.activeId && sessions.data?.length) void loadSession(sessions.data[0]!.id);
+    if (loadedOnMount.current || !sessions.data) return;
+    loadedOnMount.current = true;
+    const id = store.activeId ?? sessions.data[0]?.id;
+    if (id) void loadSession(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store.open, sessions.data]);
+  }, [sessions.data]);
 
   // SSE stream per session, connected *before* sending so no event of a brand-new chat is lost.
   const source = useRef<{ id: string; es: EventSource; ready: Promise<void> } | null>(null);
@@ -127,13 +127,19 @@ export function AiPanel() {
           if (event.text.startsWith("model ")) void queryClient.invalidateQueries({ queryKey: ["ai", "status"] });
           return;
         }
+        if (event.type === "session_updated") {
+          void queryClient.invalidateQueries({ queryKey: ["ai", "sessions"] });
+          return;
+        }
         if (event.type === "ui_action") {
           const a = event.action;
           const sid = useAiStore.getState().activeId;
           if (!sid) return;
           const title = useAiStore.getState().sessions.find((x) => x.id === sid)?.title ?? "chat";
           const dialect = (connectionsList.data ?? []).find((c) => c.id === a.connectionId)?.dialect;
-          playgroundQuery(sid, title, a.connectionId, formatSql(a.sql, dialect), a.run);
+          const formatted = formatSql(a.sql, dialect);
+          markThreadQuery(sid, formatted);
+          playgroundQuery(sid, title, a.connectionId, formatted, a.run);
           return;
         }
         useAiStore.getState().applyEvent(event);
@@ -163,32 +169,20 @@ export function AiPanel() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [store.messages]);
 
-  async function newChat() {
-    try {
-      const s = await rpc("ai.create", {});
-      await queryClient.invalidateQueries({ queryKey: ["ai", "sessions"] });
-      await loadSession(s.id);
-    } catch (e) {
-      toast.error("Could not create chat", { description: errorMessage(e) });
-    }
-  }
-
-  async function deleteChat() {
-    if (!store.activeId) return;
-    await rpc("ai.delete", { id: store.activeId });
-    store.setActive(null, []);
-    await queryClient.invalidateQueries({ queryKey: ["ai", "sessions"] });
-  }
-
   async function send() {
     const text = input.trim();
     if (!text || store.running) return;
     let id = store.activeId;
     if (!id) {
-      const s = await rpc("ai.create", {});
+      const s = await rpc("ai.create", { connectionId: draftConnectionId });
       id = s.id;
       store.setActive(id, []);
       ensurePlayground(id, text.slice(0, 40));
+      markThreadQuery(id, "");
+      if (draftConnectionId) {
+        updateTab(useAppStore.getState().playgrounds[id]!.sql.id, { connectionId: draftConnectionId });
+        setDraftConnectionId(null);
+      }
       await queryClient.invalidateQueries({ queryKey: ["ai", "sessions"] });
     }
     setInput("");
@@ -196,7 +190,7 @@ export function AiPanel() {
     store.setRunning(true);
     try {
       await connect(id);
-      const { messageId } = await rpc("ai.send", { id, text, context: store.includeContext ? context : undefined });
+      const { messageId } = await rpc("ai.send", { id, text, context });
       useAiStore.getState().applyEvent({ type: "turn_started", messageId });
     } catch (e) {
       store.setRunning(false);
@@ -217,78 +211,32 @@ export function AiPanel() {
     }
   };
 
-  const active = store.sessions.find((s) => s.id === store.activeId);
   const st = status.data;
   const modelValue = active?.model ?? st?.settings.defaultModel ?? "";
   const modelLabel = st?.models.find((m) => m.value === modelValue)?.label ?? modelValue ?? "Model";
   const effortValue = active?.effort ?? st?.settings.defaultEffort ?? null;
   const selectedModel = st?.models.find((m) => m.value === modelValue);
   const effortLevels = selectedModel?.effortLevels?.length ? selectedModel.effortLevels : (st?.efforts ?? []);
-  const contextLabel = context?.table
-    ? `${context.schema ? `${context.schema}.` : ""}${context.table}`
-    : context?.sql !== undefined
-      ? "SQL editor"
-      : context?.connectionId
-        ? "connection"
-        : null;
+  const connection = connectionsList.data?.find((c) => c.id === connectionId) ?? null;
   const unavailable = st ? !st.available : false;
   const billing = st?.settings.authMode === "apiKey" ? "API key" : (st?.account?.subscriptionType ?? "subscription");
 
   return (
-    <aside className="flex h-full min-w-0 flex-col border-l bg-background">
-      <header className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
-        <SparklesIcon className="size-4 text-primary" />
-        <NativeSelect
-          value={store.activeId ?? ""}
-          onChange={(e) => e.target.value && void loadSession(e.target.value)}
-          className="min-w-0 flex-1"
-        >
-          {!store.activeId && <option value="">New chat</option>}
-          {store.sessions.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.title}
-            </option>
-          ))}
-        </NativeSelect>
-        <Tooltip>
-          <TooltipTrigger
-            render={<Button variant="ghost" size="icon-sm" aria-label="Open playground" disabled={!store.activeId} />}
-            onClick={() => store.activeId && ensurePlayground(store.activeId, active?.title ?? "chat", { activate: true })}
-          >
-            <LayoutPanelTopIcon />
-          </TooltipTrigger>
-          <TooltipContent>Open the assistant playground tab</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="New chat" />} onClick={newChat}>
-            <PlusIcon />
-          </TooltipTrigger>
-          <TooltipContent>New chat</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={<Button variant="ghost" size="icon-sm" aria-label="Delete chat" disabled={!store.activeId} />}
-            onClick={deleteChat}
-          >
-            <Trash2Icon />
-          </TooltipTrigger>
-          <TooltipContent>Delete chat</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Assistant settings" />} onClick={() => openSettings("assistant")}>
-            <SettingsIcon />
-          </TooltipTrigger>
-          <TooltipContent>Settings, account and limits</TooltipContent>
-        </Tooltip>
-        <Button variant="ghost" size="icon-sm" aria-label="Close assistant" onClick={() => store.setOpen(false)}>
-          <XIcon />
-        </Button>
+    <aside className="flex h-full min-w-0 flex-col bg-background">
+      <header className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
+        <SparklesIcon className="size-4 shrink-0 text-primary" />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{active?.title ?? "New chat"}</span>
+        {connection && (
+          <span className="flex shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground" title={`Working on ${connection.name} (${connection.dialect})`}>
+            <DatabaseIcon className="size-3" /> {connection.name}
+          </span>
+        )}
       </header>
 
       {st && !st.available && <div className="border-b bg-destructive/10 px-3 py-2 text-xs text-destructive">{st.detail}</div>}
       {st?.settings.authMode === "subscription" && st.account && !st.account.loggedIn && (
         <div className="border-b bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
-          Not logged in to Claude Code. Open settings to switch to an API key or run <code>claude</code> and <code>/login</code>.
+          Not logged in to Claude Code. Run <code>claude</code> and <code>/login</code>, or switch to an API key in Settings → Assistant.
         </div>
       )}
 
@@ -297,7 +245,7 @@ export function AiPanel() {
           <EmptyState
             icon={<BotIcon />}
             title="Ask about your data"
-            description="Try “How many active users signed up this month?” or “Which users have no posts?”. Queries and results open in the Assistant playground tab; the chat stays short and read-only."
+            description="Try “How many active users signed up this month?” or “Which users have no posts?”. Queries and results appear in the playground on the right; the chat stays short and read-only."
           />
         ) : (
           store.messages.map((m) => <ChatMessage key={m.id} message={m} />)
@@ -380,11 +328,26 @@ export function AiPanel() {
           </InputGroup>
         </form>
         <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px] text-muted-foreground">
-          <label className="flex items-center gap-1.5" title="Send the active tab (table / SQL) as context">
-            <Checkbox checked={store.includeContext} onCheckedChange={(v) => store.setIncludeContext(Boolean(v))} className="size-3.5" />
-            <span className="truncate">{contextLabel ? `Context: ${contextLabel}` : "Context: none"}</span>
+          <label
+            className={cn("flex min-w-0 items-center gap-1", !connection && "text-amber-600 dark:text-amber-500")}
+            title={connection ? `The assistant works on "${connection.name}" (${connection.dialect}); SQL in the playground is sent along.` : "Pick the connection the assistant should work on"}
+          >
+            <DatabaseIcon className="size-3 shrink-0" />
+            <NativeSelect
+              value={connectionId ?? ""}
+              onChange={(e) => selectConnection(e.target.value || null)}
+              className="min-w-0 max-w-52 [&>select]:h-6 [&>select]:border-0 [&>select]:bg-transparent [&>select]:pl-1 [&>select]:text-[11px] [&>select]:font-medium [&>select]:dark:bg-transparent"
+              aria-label="Connection"
+            >
+              <option value="">No connection</option>
+              {(connectionsList.data ?? []).map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </NativeSelect>
           </label>
-          <RateLimitBadge limits={st?.rateLimits ?? []} onOpenSettings={() => openSettings("assistant")} />
+          <RateLimitBadge limits={st?.rateLimits ?? []} />
           <span className="truncate">Billing: {billing}</span>
           {st?.lastModel && <span className="truncate">Model: {st.lastModel}</span>}
           <span className="ml-auto hidden xl:inline">{modKey}+Enter sends</span>

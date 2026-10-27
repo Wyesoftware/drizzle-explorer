@@ -775,6 +775,7 @@ export function TableTab({ tab }: { tab: TableTabModel }) {
                     onApi={setGridApi}
                     loading={rows.isLoading}
                     columnFilters={gridFilters}
+                    rowNumberOffset={infinite ? 0 : request.offset}
                   />
                 </ContextMenuTrigger>
                 <ContextMenuContent className="w-56">

@@ -1,13 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { CircleAlertIcon, CopyIcon, DatabaseIcon, DownloadIcon, PanelRightIcon, PlayIcon, WandSparklesIcon } from "lucide-react";
+import { toast } from "sonner";
+import {
+  BookmarkIcon,
+  CircleAlertIcon,
+  CopyIcon,
+  DatabaseIcon,
+  DownloadIcon,
+  PanelRightIcon,
+  PlayIcon,
+  SaveIcon,
+  WandSparklesIcon,
+} from "lucide-react";
 import { formatSql } from "@/lib/sql-format";
 import type { ExportSource, QueryResult } from "@shared/types";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -15,11 +29,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Spinner } from "@/components/ui/spinner";
 import { EmptyState } from "@/components/EmptyState";
-import { useConnections, useTables } from "@/lib/queries";
+import { useConnections, useSaveQuery, useSavedQueries, useTables } from "@/lib/queries";
 import { errorMessage, rpc } from "@/lib/rpc";
 import { useAppStore, type SqlTab as SqlTabModel } from "@/lib/store";
 import { formatCount, formatDuration, modKey } from "@/lib/format";
-import { DataGrid } from "@/features/grid/DataGrid";
+import { DataGrid, NUMERIC_TYPES, type GridColumnFilters } from "@/features/grid/DataGrid";
+import { type ColumnFilterModels, type ColumnFilterSpec } from "@/features/grid/filters/model";
+import { dateEditMode } from "@/lib/format-value";
 import { ValuePanel, type SelectedCell } from "@/features/grid/ValuePanel";
 import { openDialog } from "@/lib/dialogs";
 import { sqlScope, useFormatStore, useScopeFormats } from "@/lib/formats";
@@ -35,6 +51,33 @@ export function SqlTab({ tab }: { tab: SqlTabModel }) {
   const [cell, setCell] = useState<SelectedCell | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
   const [dialog, setDialog] = useState<"export" | "transfer" | null>(null);
+  // Column filters on the results, applied in the grid (the rows are already here). Reset per result.
+  const [filterModel, setFilterModel] = useState<ColumnFilterModels>({});
+  const [displayedRows, setDisplayedRows] = useState<number | null>(null);
+  const filterFor = useCallback(
+    (column: string): ColumnFilterSpec => {
+      const col = result?.columns.find((c) => c.name === column);
+      const type = col?.dataType ?? "";
+      const sample = result?.rows.find((r) => r[column] !== null && r[column] !== undefined)?.[column];
+      if (NUMERIC_TYPES.test(type) || (!type && typeof sample === "number")) return { type: "number" };
+      const mode = dateEditMode(type);
+      if (mode) return { type: "date", mode };
+      return { type: "text" };
+    },
+    [result],
+  );
+  const gridFilters = useMemo<GridColumnFilters>(
+    () => ({
+      filterFor,
+      model: filterModel,
+      clientSide: true,
+      onModelChange: (model, displayed) => {
+        setFilterModel(model);
+        setDisplayedRows(Object.keys(model).length ? (displayed ?? null) : null);
+      },
+    }),
+    [filterFor, filterModel],
+  );
 
   const connection = connections.data?.find((c) => c.id === tab.connectionId) ?? null;
   const connectionItems = useMemo(
@@ -50,11 +93,21 @@ export function SqlTab({ tab }: { tab: SqlTabModel }) {
     [tables.data],
   );
 
+  // Runs can overlap (the assistant fires several queries in a row); only the most recently started
+  // one may publish its result, otherwise a slow earlier query overwrites the final one.
+  const runSeq = useRef(0);
   const execute = useMutation({
-    mutationFn: (sqlText: string) => rpc("sql.execute", { connectionId: tab.connectionId!, sql: sqlText }),
-    onSuccess: (data, sqlText) => {
+    mutationFn: async (sqlText: string) => {
+      const seq = ++runSeq.current;
+      const data = await rpc("sql.execute", { connectionId: tab.connectionId!, sql: sqlText });
+      return { data, seq };
+    },
+    onSuccess: ({ data, seq }, sqlText) => {
+      if (seq !== runSeq.current) return;
       setResult(data);
       setLastSql(sqlText);
+      setFilterModel({});
+      setDisplayedRows(null);
     },
   });
   const hasRows = Boolean(result && result.columns.length > 0 && tab.connectionId);
@@ -69,6 +122,35 @@ export function SqlTab({ tab }: { tab: SqlTabModel }) {
     openDialog({ kind: "format", scope, column, dataType: col?.dataType ?? null, sample });
   };
   const resultSource: ExportSource = { kind: "sql", connectionId: tab.connectionId ?? "", sql: lastSql };
+
+  // SQL library: a plain tab links to the entry it opened (Save updates it); the assistant playground
+  // never links, saving from it always adds a named copy.
+  const playground = useAppStore((s) => Object.values(s.playgrounds).find((p) => p.sql.id === tab.id));
+  const isPlayground = Boolean(playground);
+  const saved = useSavedQueries(tab.connectionId, Boolean(tab.connectionId));
+  const saveQuery = useSaveQuery();
+  const saveAs = () =>
+    openDialog({
+      kind: "saveQuery",
+      connectionId: tab.connectionId,
+      sql: tab.sql,
+      defaultName: isPlayground ? (playground?.title ?? "") : tab.savedId ? `${tab.title} copy` : "",
+      onSaved: (q) => {
+        if (!isPlayground) updateTab(tab.id, { savedId: q.id, title: q.name });
+      },
+    });
+  const save = () => {
+    if (!tab.savedId || isPlayground) return saveAs();
+    saveQuery
+      .mutateAsync({ id: tab.savedId, connectionId: tab.connectionId, name: tab.title, sql: tab.sql })
+      .then(() => toast.success(`Saved "${tab.title}"`))
+      .catch((e) => toast.error("Could not save query", { description: errorMessage(e) }));
+  };
+  const loadSaved = (id: string) => {
+    const q = saved.data?.find((x) => x.id === id);
+    if (!q) return;
+    updateTab(tab.id, isPlayground ? { sql: q.sql } : { sql: q.sql, savedId: q.id, title: q.name, connectionId: q.connectionId });
+  };
 
   const run = useCallback(() => {
     if (!tab.connectionId || !tab.sql.trim() || execute.isPending) return;
@@ -120,10 +202,48 @@ export function SqlTab({ tab }: { tab: SqlTabModel }) {
           </TooltipTrigger>
           <TooltipContent>Format SQL</TooltipContent>
         </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={<Button variant="ghost" size="icon-sm" aria-label="Save query" disabled={!tab.sql.trim() || saveQuery.isPending} />}
+            onClick={save}
+          >
+            <SaveIcon />
+          </TooltipTrigger>
+          <TooltipContent>{tab.savedId && !isPlayground ? `Save "${tab.title}"` : "Save to saved queries…"}</TooltipContent>
+        </Tooltip>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label="Saved queries" />}>
+            <BookmarkIcon />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-64">
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Saved queries{connection ? ` · ${connection.name}` : ""}</DropdownMenuLabel>
+              {!tab.connectionId ? (
+                <DropdownMenuItem disabled>Choose a connection first</DropdownMenuItem>
+              ) : saved.data?.length ? (
+                saved.data.map((q) => (
+                  <DropdownMenuItem key={q.id} onClick={() => loadSaved(q.id)} title={q.sql}>
+                    <BookmarkIcon /> <span className="truncate">{q.name}</span>
+                  </DropdownMenuItem>
+                ))
+              ) : (
+                <DropdownMenuItem disabled>{saved.isLoading ? "Loading…" : "Nothing saved yet"}</DropdownMenuItem>
+              )}
+            </DropdownMenuGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={saveAs} disabled={!tab.sql.trim()}>
+              <SaveIcon /> {isPlayground ? "Save to saved queries…" : "Save as new…"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <span className="ml-auto text-xs text-muted-foreground">
           {result && !execute.isPending && (
             <>
-              {result.command ?? "OK"} · {formatCount(result.rowCount)} rows · {formatDuration(result.durationMs)}
+              {result.command ?? "OK"} ·{" "}
+              {displayedRows !== null && displayedRows !== result.rowCount
+                ? `${formatCount(displayedRows)} of ${formatCount(result.rowCount)} rows (filtered)`
+                : `${formatCount(result.rowCount)} rows`}{" "}
+              · {formatDuration(result.durationMs)}
             </>
           )}
         </span>
@@ -187,7 +307,8 @@ export function SqlTab({ tab }: { tab: SqlTabModel }) {
                     formats={formats}
                     formatDefaults={formatDefaults}
                     onFormatColumn={formatColumn}
-                onResetFormat={resetFormat}
+                    onResetFormat={resetFormat}
+                    columnFilters={gridFilters}
                   />
                 </ResizablePanel>
                 {valueOpen && (

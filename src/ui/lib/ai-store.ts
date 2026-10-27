@@ -2,36 +2,26 @@ import { create } from "zustand";
 import type { AiEvent, AiMessage, AiMessagePart, AiSessionInfo } from "@shared/types";
 
 interface AiState {
-  open: boolean;
   sessions: AiSessionInfo[];
   activeId: string | null;
   messages: AiMessage[];
   running: boolean;
-  includeContext: boolean;
-  setOpen: (open: boolean) => void;
-  toggle: () => void;
   setSessions: (sessions: AiSessionInfo[]) => void;
   setActive: (id: string | null, messages: AiMessage[]) => void;
   setRunning: (running: boolean) => void;
-  setIncludeContext: (v: boolean) => void;
   appendUser: (message: AiMessage) => void;
   applyEvent: (event: AiEvent) => void;
 }
 
 /** Chat panel state. Message parts are patched in place as SSE events arrive. */
 export const useAiStore = create<AiState>((set, get) => ({
-  open: false,
   sessions: [],
   activeId: null,
   messages: [],
   running: false,
-  includeContext: true,
-  setOpen: (open) => set({ open }),
-  toggle: () => set((s) => ({ open: !s.open })),
   setSessions: (sessions) => set({ sessions }),
   setActive: (id, messages) => set({ activeId: id, messages, running: false }),
   setRunning: (running) => set({ running }),
-  setIncludeContext: (includeContext) => set({ includeContext }),
   appendUser: (message) => set((s) => ({ messages: [...s.messages, message] })),
 
   applyEvent: (event) => {

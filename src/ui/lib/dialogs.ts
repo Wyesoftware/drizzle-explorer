@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Dialect, ExportSource } from "@shared/types";
+import type { Dialect, ExportSource, SavedQuery } from "@shared/types";
 
 export interface ConfirmOption {
   key: string;
@@ -23,7 +23,8 @@ export type DialogRequest =
   | { kind: "dump"; connectionId: string; dialect: Dialect; schema?: string | null }
   | { kind: "restore"; connectionId: string; dialect: Dialect }
   | { kind: "job"; jobId: string }
-  | { kind: "format"; scope: string; column: string; dataType: string | null; sample: unknown };
+  | { kind: "format"; scope: string; column: string; dataType: string | null; sample: unknown }
+  | { kind: "saveQuery"; id?: string | null; connectionId: string | null; sql: string; defaultName?: string; onSaved?: (query: SavedQuery) => void };
 
 interface DialogState {
   current: DialogRequest | null;

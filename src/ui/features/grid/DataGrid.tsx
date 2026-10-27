@@ -104,8 +104,14 @@ export interface GridColumnFilters {
   /** Filter UI per column (set / number / date / text), usually derived from the column type. */
   filterFor: (column: string) => ColumnFilterSpec;
   model: ColumnFilterModels;
-  onModelChange: (model: ColumnFilterModels) => void;
+  /** `displayedRows` is the count after filtering, only in client-side mode. */
+  onModelChange: (model: ColumnFilterModels, displayedRows?: number) => void;
+  /** Apply the filters in the grid itself (rows in memory) instead of reporting them to the server. */
+  clientSide?: boolean;
 }
+
+/** Column id of the running row number (pinned left; not a data column). */
+export const ROW_NUMBER_COL = "__row_number";
 
 export interface GridEditing {
   isEditable: (column: string) => boolean;
@@ -170,6 +176,7 @@ export function DataGrid({
   datasource,
   loading = false,
   columnFilters,
+  rowNumberOffset = 0,
 }: {
   columns: ResultColumn[];
   rows: ResultRow[];
@@ -198,6 +205,8 @@ export function DataGrid({
   datasource?: GridDatasource;
   loading?: boolean;
   columnFilters?: GridColumnFilters;
+  /** Added to the running row number (paged table views: the page's first row index). */
+  rowNumberOffset?: number;
 }) {
   const [api, setApi] = useState<GridApi<ResultRow> | null>(null);
   const datasourceRef = useRef(datasource);
@@ -212,6 +221,7 @@ export function DataGrid({
   const editorFor = editing?.editorFor;
   const hasEditing = Boolean(editing);
   const filterFor = columnFilters?.filterFor;
+  const clientSideFilters = Boolean(columnFilters?.clientSide);
   /** filterParams objects per column, reused while the spec is unchanged (see filterColDef). */
   const filterParamsCache = useRef(new Map<string, ColumnFilterParams>());
   const agDatasource = useMemo<IDatasource | undefined>(
@@ -244,11 +254,41 @@ export function DataGrid({
   const { resolvedTheme } = useTheme();
   const serverSort = Boolean(onSortChange);
 
+  // Running row number: AG Grid's own `rowNumbers` option needs the Enterprise module, so this is a plain
+  // pinned column reading the display index (sequential after client-side sorts/filters too).
+  const digits = String(rowNumberOffset + rows.length).length;
+  const rowNumberWidth = Math.max(44, 20 + (datasource ? Math.max(digits, 6) : digits) * 8);
+  const rowNumberDef = useMemo<ColDef<ResultRow>>(
+    () => ({
+      colId: ROW_NUMBER_COL,
+      headerName: "",
+      pinned: "left",
+      lockPosition: "left",
+      lockPinned: true,
+      suppressMovable: true,
+      suppressNavigable: true,
+      sortable: false,
+      resizable: false,
+      filter: false,
+      floatingFilter: false,
+      editable: false,
+      suppressHeaderMenuButton: true,
+      width: rowNumberWidth,
+      minWidth: rowNumberWidth,
+      maxWidth: rowNumberWidth,
+      cellClass: "row-number-cell",
+      headerClass: "row-number-header",
+      valueGetter: (p) => (p.node?.rowPinned ? "" : (p.node?.rowIndex ?? 0) + 1 + rowNumberOffset),
+    }),
+    [rowNumberOffset, rowNumberWidth],
+  );
+
   const columnDefs = useMemo<ColDef<ResultRow>[]>(
-    () =>
-      columns
+    () => [
+      rowNumberDef,
+      ...columns
         .filter((c) => !c.name.startsWith("__"))
-        .map((c) => ({
+        .map<ColDef<ResultRow>>((c) => ({
         field: c.name,
         colId: c.name,
         headerName: c.name,
@@ -293,10 +333,11 @@ export function DataGrid({
             ? "ag-right-aligned-cell font-mono"
             : undefined,
         minWidth: 80,
-        ...(filterFor ? filterColDef(c.name, filterFor(c.name), filterParamsCache.current) : {}),
+        ...(filterFor ? filterColDef(c.name, filterFor(c.name), filterParamsCache.current, clientSideFilters) : {}),
       })),
+    ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [columns, serverSort, sort, formats, formatDefaults, onFormatColumn, onResetFormat, hasEditing, editorFor, filterFor],
+    [rowNumberDef, columns, serverSort, sort, formats, formatDefaults, onFormatColumn, onResetFormat, hasEditing, editorFor, filterFor, clientSideFilters],
   );
 
   const rowIdOf = (row: ResultRow): string => (getRowId ? getRowId(row) : JSON.stringify(row));
@@ -321,7 +362,8 @@ export function DataGrid({
   );
 
   const handleFilterChanged = (event: FilterChangedEvent<ResultRow>) => {
-    columnFiltersRef.current?.onModelChange((event.api.getFilterModel() as ColumnFilterModels) ?? {});
+    const model = (event.api.getFilterModel() as ColumnFilterModels) ?? {};
+    columnFiltersRef.current?.onModelChange(model, columnFiltersRef.current.clientSide ? event.api.getDisplayedRowCount() : undefined);
   };
 
   const handleSortChanged = (event: SortChangedEvent<ResultRow>) => {
@@ -337,7 +379,7 @@ export function DataGrid({
   const handleCellFocused = (event: CellFocusedEvent<ResultRow>) => {
     if (!onCellSelect || event.rowIndex === null || event.rowIndex === undefined) return;
     const colId = typeof event.column === "string" ? event.column : event.column?.getColId();
-    if (!colId) return;
+    if (!colId || colId === ROW_NUMBER_COL) return;
     const pinned = event.rowPinned === "top";
     const node = pinned ? event.api.getPinnedTopRow(event.rowIndex) : event.api.getDisplayedRowAtIndex(event.rowIndex);
     const value = node ? event.api.getCellValue({ rowNode: node, colKey: colId }) : undefined;
@@ -345,7 +387,7 @@ export function DataGrid({
   };
 
   const handleCellDoubleClicked = (event: CellDoubleClickedEvent<ResultRow>) => {
-    if (!onCellOpen || event.rowIndex === null) return;
+    if (!onCellOpen || event.rowIndex === null || event.column.getColId() === ROW_NUMBER_COL) return;
     onCellOpen({
       column: event.column.getColId(),
       value: event.value,
@@ -355,7 +397,7 @@ export function DataGrid({
   };
 
   const handleCellContextMenu = (event: CellContextMenuEvent<ResultRow>) => {
-    if (!onCellContextMenu || event.rowIndex === null) return;
+    if (!onCellContextMenu || event.rowIndex === null || event.column.getColId() === ROW_NUMBER_COL) return;
     onCellContextMenu({
       column: event.column.getColId(),
       value: event.value,
@@ -421,12 +463,13 @@ function filterColDef(
   column: string,
   spec: ColumnFilterSpec,
   cache: Map<string, ColumnFilterParams>,
+  clientSide: boolean,
 ): Pick<ColDef, "filter" | "filterParams" | "floatingFilter" | "floatingFilterComponent" | "floatingFilterComponentParams" | "suppressFloatingFilterButton"> {
   // Keep the params object stable while the spec is unchanged, so re-applied column defs do not look
   // different to AG Grid (which would refresh / rebuild the filter components).
   const cached = cache.get(column);
   const params: ColumnFilterParams =
-    cached && JSON.stringify(cached.spec) === JSON.stringify(spec) ? cached : { spec };
+    cached && cached.clientSide === clientSide && JSON.stringify(cached.spec) === JSON.stringify(spec) ? cached : { spec, clientSide };
   cache.set(column, params);
   return {
     filter: ColumnFilter,

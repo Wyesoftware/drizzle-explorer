@@ -1,4 +1,5 @@
-import { FunctionSquareIcon, SettingsIcon, SparklesIcon, TableIcon, TerminalIcon, XIcon } from "lucide-react";
+import { FunctionSquareIcon, TableIcon, TerminalIcon, XIcon } from "lucide-react";
+import { ModeSwitch } from "@/components/ModeSwitch";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/EmptyState";
 import { useConnections } from "@/lib/queries";
@@ -7,8 +8,6 @@ import { cn } from "@/lib/utils";
 import { TableTab } from "@/features/table/TableTab";
 import { SqlTab } from "@/features/sql/SqlTab";
 import { RoutineTab } from "@/features/routine/RoutineTab";
-import { PlaygroundTab } from "@/features/playground/PlaygroundTab";
-import { SettingsPage } from "@/features/settings/SettingsPage";
 
 export function Workspace() {
   const tabs = useAppStore((s) => s.tabs);
@@ -19,45 +18,44 @@ export function Workspace() {
   const connections = useConnections();
   const active = tabs.find((t) => t.id === activeTabId) ?? null;
 
-  if (tabs.length === 0) {
-    return (
-      <EmptyState
-        icon={<TableIcon />}
-        title="Nothing open"
-        description="Pick a table in the sidebar, or open a SQL editor to run ad-hoc queries."
-        action={
-          <Button variant="outline" size="sm" onClick={() => openSqlEditor(connections.data?.[0]?.id ?? null)}>
-            <TerminalIcon /> New SQL editor
-          </Button>
-        }
-      />
-    );
-  }
-
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b bg-muted/30" role="tablist">
-        {tabs.map((tab) => (
-          <TabButton
-            key={tab.id}
-            tab={tab}
-            active={tab.id === activeTabId}
-            onSelect={() => setActiveTab(tab.id)}
-            onClose={() => closeTab(tab.id)}
-          />
-        ))}
+      {/* The tab strip is always there: its right end holds the mode switch and the settings gear. */}
+      <div className="flex h-9 shrink-0 items-stretch border-b bg-muted/30">
+        <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto" role="tablist">
+          {tabs.map((tab) => (
+            <TabButton
+              key={tab.id}
+              tab={tab}
+              active={tab.id === activeTabId}
+              onSelect={() => setActiveTab(tab.id)}
+              onClose={() => closeTab(tab.id)}
+            />
+          ))}
+        </div>
+        <div className="flex shrink-0 items-center border-l px-1.5">
+          <ModeSwitch />
+        </div>
       </div>
       <div className="min-h-0 flex-1">
+        {tabs.length === 0 && (
+          <EmptyState
+            icon={<TableIcon />}
+            title="Nothing open"
+            description="Pick a table in the sidebar, or open a SQL editor to run ad-hoc queries."
+            action={
+              <Button variant="outline" size="sm" onClick={() => openSqlEditor(connections.data?.[0]?.id ?? null)}>
+                <TerminalIcon /> New SQL editor
+              </Button>
+            }
+          />
+        )}
         {tabs.map((tab) => (
           <div key={tab.id} className={cn("h-full", tab.id !== active?.id && "hidden")}>
             {tab.kind === "table" ? (
               <TableTab tab={tab} />
             ) : tab.kind === "routine" ? (
               <RoutineTab tab={tab} />
-            ) : tab.kind === "playground" ? (
-              <PlaygroundTab tab={tab} />
-            ) : tab.kind === "settings" ? (
-              <SettingsPage tab={tab} />
             ) : (
               <SqlTab tab={tab} />
             )}
@@ -84,12 +82,8 @@ function TabButton({
       ? tab.table
       : tab.kind === "routine"
         ? `${tab.routine.name}()`
-        : tab.kind === "playground"
-          ? "Assistant"
-          : tab.kind === "settings"
-            ? "Settings"
-            : tab.title;
-  const subtitle = tab.kind === "table" && tab.schema ? tab.schema : tab.kind === "routine" ? tab.routine.schema : tab.kind === "playground" ? tab.title : null;
+        : tab.title;
+  const subtitle = tab.kind === "table" && tab.schema ? tab.schema : tab.kind === "routine" ? tab.routine.schema : null;
   return (
     <div
       role="tab"
@@ -97,7 +91,6 @@ function TabButton({
       className={cn(
         "group/tab flex max-w-56 min-w-0 shrink-0 cursor-default items-center gap-1.5 border-r px-3 text-[13px] select-none",
         active ? "bg-background text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-        tab.kind === "playground" && (active ? "bg-primary/10 text-primary" : "text-primary/70 hover:text-primary"),
       )}
       onClick={onSelect}
       onAuxClick={(e) => e.button === 1 && onClose()}
@@ -107,10 +100,6 @@ function TabButton({
         <TableIcon className="size-3.5 shrink-0" />
       ) : tab.kind === "routine" ? (
         <FunctionSquareIcon className="size-3.5 shrink-0" />
-      ) : tab.kind === "playground" ? (
-        <SparklesIcon className="size-3.5 shrink-0" />
-      ) : tab.kind === "settings" ? (
-        <SettingsIcon className="size-3.5 shrink-0" />
       ) : (
         <TerminalIcon className="size-3.5 shrink-0" />
       )}

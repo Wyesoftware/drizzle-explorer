@@ -86,3 +86,68 @@ export function normalizeDateValue(value: string): string {
 export function toInputDateValue(value: string): string {
   return value.replace(" ", "T");
 }
+
+/** SQL `LIKE` pattern → case-insensitive regular expression (`%` any run, `_` one char). */
+function likeToRegExp(pattern: string): RegExp {
+  const source = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*").replace(/_/g, ".");
+  return new RegExp(`^${source}$`, "is");
+}
+
+function asText(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/** Compares as numbers when both sides are numeric, otherwise as strings (ISO dates compare fine). */
+function compare(value: unknown, target: string): number {
+  const a = typeof value === "number" ? value : Number(asText(value));
+  const b = Number(target);
+  if (Number.isFinite(a) && Number.isFinite(b) && asText(value).trim() !== "" && target.trim() !== "") return a - b;
+  return asText(value).localeCompare(target);
+}
+
+function listOf(model: ColumnFilterModel): string[] {
+  return model.values ?? (model.value ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+}
+
+/**
+ * Client-side evaluation of a column filter model against one cell value, for grids whose rows are
+ * already in memory (SQL results). Mirrors the server-side WHERE builder semantics.
+ */
+export function matchesModel(model: ColumnFilterModel | null | undefined, value: unknown): boolean {
+  if (!model) return true;
+  const isNull = value === null || value === undefined;
+  if (model.op === "is_null") return isNull;
+  if (model.op === "is_not_null") return !isNull;
+  if (isNull) return Boolean(model.orNull);
+  const text = asText(value);
+  const target = model.value ?? "";
+  const lower = text.toLowerCase();
+  switch (model.op) {
+    case "eq":
+      return compare(value, target) === 0;
+    case "neq":
+      return compare(value, target) !== 0;
+    case "lt":
+      return compare(value, target) < 0;
+    case "lte":
+      return compare(value, target) <= 0;
+    case "gt":
+      return compare(value, target) > 0;
+    case "gte":
+      return compare(value, target) >= 0;
+    case "contains":
+      return lower.includes(target.toLowerCase());
+    case "starts":
+      return lower.startsWith(target.toLowerCase());
+    case "ends":
+      return lower.endsWith(target.toLowerCase());
+    case "like":
+      return likeToRegExp(target).test(text);
+    case "in":
+      return listOf(model).some((v) => compare(value, v) === 0);
+    default:
+      return true;
+  }
+}

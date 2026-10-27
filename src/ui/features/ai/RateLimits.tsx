@@ -1,6 +1,5 @@
 import { GaugeIcon } from "lucide-react";
 import type { AiRateLimit } from "@shared/types";
-import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
@@ -59,8 +58,8 @@ export function RateLimitList({ limits, lastApiKeySource, lastModel }: { limits:
   );
 }
 
-/** Compact trigger for the prompt toolbar: worst window percentage with a hover breakdown. */
-export function RateLimitBadge({ limits, onOpenSettings }: { limits: AiRateLimit[]; onOpenSettings: () => void }) {
+/** Compact indicator for the prompt toolbar: worst window percentage with a hover breakdown. */
+export function RateLimitBadge({ limits }: { limits: AiRateLimit[] }) {
   const worst = limits.reduce((max, l) => Math.max(max, l.utilization ?? 0), 0);
   const pct = Math.round(worst * 100);
   const rejected = limits.some((l) => l.status === "rejected");
@@ -69,8 +68,7 @@ export function RateLimitBadge({ limits, onOpenSettings }: { limits: AiRateLimit
       <HoverCardTrigger
         delay={100}
         closeDelay={100}
-        render={<Button variant="ghost" size="xs" className={cn("h-6 gap-1 px-1.5 text-[11px] text-muted-foreground", rejected && "text-destructive")} />}
-        onClick={onOpenSettings}
+        render={<span className={cn("flex h-6 cursor-default items-center gap-1 px-1.5 text-[11px] text-muted-foreground", rejected && "text-destructive")} />}
       >
         <GaugeIcon className="size-3" />
         {limits.length ? `Limits: ${pct}% used` : "Limits"}
